@@ -14,7 +14,12 @@ Two phases, developed in order:
 | Phase | Package | What it does |
 |-------|---------|--------------|
 | **2** | `bench/`     | Structured **hex (C3D8)** cantilever solver + a ccx-vs-Warp speed/accuracy sweep (crossover curve). Proves the GPU path is correct and fast. |
-| **3** | `warp_fea/`  | Unstructured **quadratic tet (C3D10)** solver with von Mises recovery, pressure loads, region-based BCs, modal analysis, and the Judge-facing `solve_structural(mesh, load_case) → FEAResult` contract. |
+| **3** | `warp_fea/`  | Unstructured **quadratic tet (C3D10)** solver with von Mises recovery, pressure loads, region-based BCs, modal + buckling analysis, and the Judge-facing `solve_structural(mesh, load_case) → FEAResult` contract. |
+
+The four quantities the Judge consumes — **max von Mises stress**, **max
+displacement**, **eigenfrequencies**, **buckling load factor** — all have a GPU
+path, each validated against the matching CalculiX analysis (`*STATIC`,
+`*FREQUENCY`, `*BUCKLE`).
 
 All results are **SI (Pa, m, N)** and **fp64**. The solve loop is GPU-resident:
 `bsr_cg` (conjugate gradient) with Jacobi preconditioning, captured in a CUDA graph.
@@ -46,8 +51,10 @@ while CPU stays < 20%.
 | bolted bracket    | C3D10 | 22,119  | 4.3e-08 | 0.00% |
 
 Modal (lowest 10 frequencies, C3D10) agrees with ccx `*FREQUENCY` to **1.1e-05**.
+Buckling (slender Euler column, lowest 4 factors, C3D10) agrees with ccx
+`*BUCKLE` to **1.1e-07** (BLF 44.13 vs an analytical Euler estimate of ~44.1).
 
-All six acceptance criteria (PHASE3 §3) pass: `sample_results/acceptance.json`.
+All seven acceptance criteria (PHASE3 §3) pass: `sample_results/acceptance.json`.
 
 ---
 
@@ -121,12 +128,16 @@ Supported loads: `force` (total N over a node set, ≙ `*CLOAD`), `pressure`
 (Pa on a face, ≙ `*DLOAD`), `traction` (Pa vector on a face), `gravity` (m/s²).
 Supports: `fixed`. Regions are resolved through gmsh **physical groups**.
 
-Modal analysis:
+Modal and buckling analysis:
 
 ```python
-from warp_fea.modal import solve_modal
+from warp_fea import solve_modal, solve_buckling
+
 result = solve_modal("bracket.msh", load_case, n_modes=6)
-result.measured["eigenfrequencies"]   # [Hz], ascending
+result.measured["eigenfrequencies"]        # [Hz], ascending
+
+result = solve_buckling("column.msh", load_case, n_modes=4)  # loads = reference load
+result.measured["buckling_load_factor"].value   # BLF; critical load = BLF x reference
 ```
 
 ### Phase 2 — the CPU-vs-GPU crossover sweep
@@ -144,8 +155,10 @@ python -m bench.bench_driver --max-size 160x32x32   # ccx vs Warp, all sizes
 This bit us for hours, so it is worth stating plainly.
 
 `ccx` prints `Using up to N cpu(s) for the stress calculation`, and **that parallel
-path intermittently writes corrupted integration-point stresses** while the
-(SPOOLES) displacement solve stays bit-exact. Measured on one deck, 30 repeats each:
+path intermittently writes corrupted output** — mostly integration-point stresses,
+but displacements too (a 14-thread run of the plate case gave a max displacement
+0.2% off what both 1-thread ccx and Warp agree on). Measured on one deck, 30
+repeats each:
 
 | ccx threads | corrupted runs |
 |------------:|---------------:|
@@ -158,10 +171,10 @@ normal (right row count, right displacements) but reports a max von Mises silent
 15–80× too high. For a yield check, that is exactly the input that fabricates a
 false verdict.
 
-**Mitigation in this repo:** `warp_fea.validate.run_ccx_oracle` extracts *values*
-from a **single-threaded** ccx run (deterministic by construction) and takes *timing*
-from a full-core run, cross-checking that the two agree on displacement. If you use
-ccx stresses anywhere else, run it with `OMP_NUM_THREADS=1`.
+**Mitigation in this repo:** `warp_fea.validate.run_ccx_oracle` always runs ccx
+**single-threaded** (deterministic — 0/30 corrupt) and re-runs once to confirm the
+result reproduces. If you use ccx for anything trustworthy, run it with
+`OMP_NUM_THREADS=1`.
 
 (Thread counts here are auto-detected from the pod's cgroup CPU quota, not
 `os.cpu_count()`, which on a shared node reports the whole node — see
@@ -183,6 +196,7 @@ warp_fea/       Phase 3: tet solver + Judge contract
   mesh_io.py        gmsh/.inp -> Tetmesh + region (physical-group) resolution
   elasticity.py     bilinear form + von Mises recovery (at quadrature points)
   modal.py          eigenfrequencies via GPU subspace iteration
+  buckling.py       linear buckling: geometric stiffness + subspace eigensolve
   results.py        FEAResult / measured / solver_status (§1.2 schema)
   validate.py       bake .inp, run ccx oracle, measured-parity comparison
   cases.py          SI validation geometries (gmsh)

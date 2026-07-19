@@ -226,6 +226,62 @@ def check_modal(n_modes: int = 10, order: int = 2) -> dict:
             "ccx_hz": [float(x) for x in fc[:n]]}
 
 
+def check_buckling(n_modes: int = 4, order: int = 2) -> dict:
+    """
+    Lowest buckling load factors vs a ccx *BUCKLE deck on the same mesh, <= 2%.
+
+    Slender axially-compressed column (Euler). The lowest mode pair is lateral
+    bending; the geometric-stiffness sign and eigenvalue convention are exactly
+    what makes warp and ccx agree, so this is a real end-to-end check of the
+    K φ = λ(−K_g) φ pipeline, not just a spectrum.
+    """
+    import subprocess
+    from .buckling import solve_buckling
+    from .cases import buckling_column
+    from .validate import (bake_buckle_inp, parse_dat_buckling_factors,
+                           pod_cpu_quota)
+
+    msh, lc = buckling_column(order=order)
+    fe = read_mesh(msh)
+    r = solve_buckling(msh, lc, n_modes=n_modes)
+    if not r.solver_status.converged:
+        print(f"  [§3-7] buckling did NOT converge: {r.solver_status.message}")
+        return {"criterion": "buckling", "pass": False,
+                "note": r.solver_status.message}
+    fw = np.array(r.measured["buckling_load_factors_all"])
+
+    job = os.path.join("fea_cases", f"column_o{order}")
+    bake_buckle_inp(fe, lc, job + ".inp", n_modes=n_modes)
+    env = dict(os.environ)
+    env["OMP_NUM_THREADS"] = "1"          # ccx parallel stress path is racy
+    env["NUMBER_OF_CPUS"] = "1"
+    for ext in (".dat", ".frd", ".sta", ".cvg"):
+        try:
+            os.remove(job + ext)
+        except FileNotFoundError:
+            pass
+    subprocess.run(["ccx", os.path.basename(job)], cwd="fea_cases", env=env,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    fc = parse_dat_buckling_factors(job + ".dat")
+    n = min(n_modes, len(fc), len(fw))
+    if n == 0:
+        return {"criterion": "buckling", "pass": False,
+                "note": "no buckling factors parsed from the ccx oracle"}
+    err = np.abs(fw[:n] - fc[:n]) / np.abs(fc[:n])
+    passed = bool(err.max() <= 0.02)
+    st = r.solver_status
+    print(f"  [§3-7] buckling, {st.element}, n_dof={st.n_dof}, "
+          f"{st.n_iters} subspace sweeps, {st.wall_time_s:.2f}s, "
+          f"cpu={st.cpu_avg_pct:.1f}% gpu={st.gpu_util_avg_pct}")
+    print(f"         warp BLF: {np.round(fw[:n], 4).tolist()}")
+    print(f"         ccx  BLF: {np.round(fc[:n], 4).tolist()}")
+    print(f"         max rel err over {n} factors = {err.max():.3e}  -> {_ok(passed)}")
+    return {"criterion": "buckling", "pass": passed, "order": order,
+            "max_rel_err": float(err.max()),
+            "warp_blf": [float(x) for x in fw[:n]],
+            "ccx_blf": [float(x) for x in fc[:n]]}
+
+
 if __name__ == "__main__":
     print("=" * 66)
     print("PHASE 3 ACCEPTANCE (PHASE3_SPEC §3)")
@@ -248,6 +304,8 @@ if __name__ == "__main__":
     cs = check_contract_shape()
     print()
     md = check_modal()
+    print()
+    bk = check_buckling()
 
     results = {
         "req1_measured_parity": parity_pass,
@@ -256,10 +314,11 @@ if __name__ == "__main__":
         "req4_non_convergence": nc["pass"],
         "req5_contract_shape": cs["pass"],
         "req6_modal_m5": md["pass"],
+        "req7_buckling": bk["pass"],
     }
     with open("acceptance.json", "w") as f:
         json.dump({"summary": results, "parity": rows,
-                   "si": si, "non_convergence": nc, "modal": md,
+                   "si": si, "non_convergence": nc, "modal": md, "buckling": bk,
                    "contract_example": cs["example"]}, f, indent=2, default=str)
 
     print("\n" + "=" * 66)
@@ -272,6 +331,7 @@ if __name__ == "__main__":
         "req4_non_convergence": "§3-4 honest converged=false",
         "req5_contract_shape":  "§3-5 §1.2 return schema",
         "req6_modal_m5":        "§3-6 modal vs *FREQUENCY (M5)",
+        "req7_buckling":        "§3-7 buckling vs *BUCKLE (BLF)",
     }
     for k, v in results.items():
         mark = "SKIP (M5)" if v is None else _ok(v)
@@ -280,7 +340,8 @@ if __name__ == "__main__":
                                  "req3_gpu_only_cpu20", "req4_non_convergence",
                                  "req5_contract_shape")]
     print("=" * 66)
-    print(f"  M1-M4 CORE: {'ALL GREEN' if all(core) else 'FAILURES PRESENT'}")
-    print(f"  M5 MODAL  : {'GREEN' if results['req6_modal_m5'] else 'not green'}")
+    print(f"  M1-M4 CORE  : {'ALL GREEN' if all(core) else 'FAILURES PRESENT'}")
+    print(f"  M5 MODAL    : {'GREEN' if results['req6_modal_m5'] else 'not green'}")
+    print(f"  BUCKLING    : {'GREEN' if results['req7_buckling'] else 'not green'}")
     print("=" * 66)
     print("wrote acceptance.json, measured_parity.csv")

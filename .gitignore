@@ -34,3 +34,6 @@ venv/
 .DS_Store
 .vscode/
 .idea/
+
+# stray local benchmark repro output
+repro_phase2/

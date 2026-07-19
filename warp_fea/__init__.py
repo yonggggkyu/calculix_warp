@@ -13,9 +13,11 @@ All inputs and outputs are SI (Pa, m, N). See PHASE3_SPEC.md for the contract.
 from .results import FEAResult, Location, Measurement, SolverStatus
 from .mesh_io import FEMesh, Region, read_mesh
 from .solver import solve_structural, solve_inp
+from .modal import solve_modal
+from .buckling import solve_buckling
 
 __all__ = [
-    "solve_structural", "solve_inp",
+    "solve_structural", "solve_inp", "solve_modal", "solve_buckling",
     "FEAResult", "Measurement", "Location", "SolverStatus",
     "FEMesh", "Region", "read_mesh",
 ]

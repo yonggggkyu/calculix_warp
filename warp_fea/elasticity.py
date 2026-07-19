@@ -97,6 +97,27 @@ def position_at_qp(s: fem.Sample, domain: fem.Domain):
 
 
 # --------------------------------------------------------------------------- #
+# geometric (initial-stress) stiffness — for linear eigenvalue buckling
+# --------------------------------------------------------------------------- #
+@fem.integrand
+def geometric_stiffness_form(s: fem.Sample, u: fem.Field, v: fem.Field,
+                             u0: fem.Field, lam: wp.float64, mu: wp.float64):
+    """
+    Geometric-stiffness bilinear form built on the pre-buckling stress σ(u0):
+
+        k_g(u, v) = ∫_Ω σ_ij (∂u_k/∂x_i)(∂v_k/∂x_j) dΩ
+                  = ∫_Ω σ : ( ∇v^T ∇u ) dΩ            (σ symmetric)
+
+    where u0 is the displacement of the reference linear-static solve. The
+    buckling pencil is then  K φ = λ (−K_g) φ,  smallest positive λ = load factor.
+    """
+    sigma = cauchy_stress(fem.D(u0, s), lam, mu)
+    gu = fem.grad(u, s)                          # ∂u_i/∂x_j
+    gv = fem.grad(v, s)
+    return wp.ddot(sigma, wp.transpose(gv) @ gu)
+
+
+# --------------------------------------------------------------------------- #
 # small GPU reductions
 # --------------------------------------------------------------------------- #
 @wp.kernel

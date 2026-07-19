@@ -220,6 +220,45 @@ def hccx_bracket(outdir: str = "fea_cases", order: int = 2, size: float = 0.0045
     return path, load_case
 
 
+def buckling_column(outdir: str = "fea_cases", order: int = 2, size: float = 0.004,
+                    L: float = 0.3, W: float = 0.01, H: float = 0.01,
+                    ref_pressure_Pa: float = 1e6) -> Tuple[str, Dict]:
+    """
+    Slender square column, clamped at x=0, uniform axial *compression* on the
+    x=L face (traction in -x). The lowest buckling mode is lateral (Euler).
+
+    L/r ≈ 100 here (r = W/sqrt(12)), so Euler buckling governs. BLF is reported
+    relative to the reference load = ref_pressure_Pa over the end face; the
+    critical load is BLF x that. Used to validate solve_buckling against ccx
+    *BUCKLE (both codes see the identical mesh + reference load).
+    """
+    gmsh = _gmsh_begin("buckling_column")
+    gmsh.model.occ.addBox(0, 0, 0, L, W, H)
+    gmsh.model.occ.synchronize()
+    fixed, loaded = [], []
+    for (d, t) in gmsh.model.getEntities(2):
+        com = gmsh.model.occ.getCenterOfMass(d, t)
+        if abs(com[0]) < 1e-9:
+            fixed.append(t)
+        elif abs(com[0] - L) < 1e-9:
+            loaded.append(t)
+    gmsh.model.addPhysicalGroup(2, fixed, name="fixed_face")
+    gmsh.model.addPhysicalGroup(2, loaded, name="load_face")
+    gmsh.model.addPhysicalGroup(3, [1], name="solid")
+    path = _gmsh_finish(gmsh, os.path.join(outdir, f"column_o{order}.msh"), order, size)
+
+    load_case = {
+        "name": "axial_compression_column",
+        "material": dict(STEEL_SI),
+        "supports": [{"region": "fixed_face", "type": "fixed"}],
+        # compressive traction: -x on the +x end face
+        "loads": [{"region": "load_face", "type": "traction",
+                   "vector": [-ref_pressure_Pa, 0.0, 0.0]}],
+        "_euler": {"L": L, "W": W, "H": H, "ref_pressure_Pa": ref_pressure_Pa},
+    }
+    return path, load_case
+
+
 ALL_CASES = {
     "cantilever": cantilever_beam,
     "pressure_cylinder": pressure_cylinder,

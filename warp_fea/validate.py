@@ -225,6 +225,88 @@ def parse_dat_eigenfrequencies(dat_path: str) -> np.ndarray:
     return np.array(out)
 
 
+def bake_buckle_inp(fe: FEMesh, load_case: dict, path: str, n_modes: int = 4) -> str:
+    """
+    A *BUCKLE deck for the same (mesh, supports, reference load) — the M-buckling
+    oracle. The reference load is applied as the identical consistent nodal forces
+    the Warp traction/force path uses, so both codes buckle the same discrete load.
+    """
+    etype = "C3D10" if fe.tet_type == "tetra10" else "C3D4"
+    nn = 10 if etype == "C3D10" else 4
+    mat = load_case["material"]
+
+    L: List[str] = ["*HEADING", f" {load_case.get('name','case')} buckling (SI)"]
+    L.append("*NODE, NSET=NALL")
+    for i, p in enumerate(fe.points):
+        L.append(f"{i+1}, {p[0]:.12e}, {p[1]:.12e}, {p[2]:.12e}")
+    L.append(f"*ELEMENT, TYPE={etype}, ELSET=EALL")
+    for ei, t in enumerate(fe.tets):
+        L.append(f"{ei+1}, " + ", ".join(str(int(v) + 1) for v in t[:nn]))
+    for sup in load_case.get("supports", []):
+        ids = np.asarray(sorted(int(i) + 1 for i in fe.region(sup["region"]).node_idx))
+        L.append(f"*NSET, NSET={sup['region']}")
+        for k in range(0, len(ids), 8):
+            L.append(", ".join(str(v) for v in ids[k:k + 8]))
+    L += ["*MATERIAL, NAME=MAT", "*ELASTIC",
+          f"{float(mat['E']):.10e}, {float(mat['nu']):.6f}",
+          "*SOLID SECTION, ELSET=EALL, MATERIAL=MAT",
+          "*STEP", "*BUCKLE", f"{n_modes}"]
+    for sup in load_case.get("supports", []):
+        L += ["*BOUNDARY", f"{sup['region']}, 1, 3"]
+    # reference load as consistent nodal forces (same as Warp's traction/force)
+    cloads: Dict[int, np.ndarray] = {}
+    for load in load_case.get("loads", []):
+        lt = str(load["type"]).lower()
+        if lt == "traction":
+            f = _consistent_traction_forces(fe, load["region"],
+                                            np.asarray(load["vector"], float))
+        elif lt == "force":
+            nodes = fe.region(load["region"]).node_idx
+            per = np.asarray(load["vector"], float) / len(nodes)
+            f = {int(nid): per for nid in nodes}
+        else:
+            raise ValueError(f"buckle bake supports traction/force, not {lt!r}")
+        for nid, vec in f.items():
+            cloads.setdefault(nid, np.zeros(3))
+            cloads[nid] += vec
+    L.append("*CLOAD")
+    for nid, vec in sorted(cloads.items()):
+        for d in range(3):
+            if abs(vec[d]) > 0.0:
+                L.append(f"{nid+1}, {d+1}, {vec[d]:.12e}")
+    L += ["*END STEP"]
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w") as f:
+        f.write("\n".join(L) + "\n")
+    return path
+
+
+def parse_dat_buckling_factors(dat_path: str) -> np.ndarray:
+    """Buckling load factors from a ccx *BUCKLE .dat (letter-spaced banner)."""
+    out: List[float] = []
+    if not os.path.exists(dat_path):
+        return np.zeros(0)
+    in_block = False
+    with open(dat_path) as f:
+        for line in f:
+            squashed = "".join(line.lower().split())
+            if "bucklingfactoroutput" in squashed:
+                in_block = True
+                continue
+            if in_block:
+                parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        out.append(float(parts[1].replace("D", "E")))
+                    except ValueError:
+                        if out:
+                            break
+                elif out:
+                    break
+    return np.array(out)
+
+
 def _consistent_traction_forces(fe: FEMesh, region: str, t_vec: np.ndarray
                                 ) -> Dict[int, np.ndarray]:
     """
@@ -358,50 +440,40 @@ def run_ccx_oracle(job_noext: str, n_threads: Optional[int] = None,
                    expect_ip: Optional[int] = None,
                    verify: bool = True) -> dict:
     """
-    Get trustworthy measured values out of ccx, working around a real CalculiX bug.
+    Get trustworthy measured values out of ccx — always **single-threaded**.
 
-    **CalculiX 2.17's multi-threaded stress recovery is racy.** ccx announces
-    "Using up to N cpu(s) for the stress calculation" and that path intermittently
-    writes corrupted integration-point stresses, while the SPOOLES displacement
-    solve stays bit-exact. Measured on one deck, 30 repeats each:
+    **CalculiX 2.17's multi-threaded path is racy**, and not only for stress.
+    ccx announces "Using up to N cpu(s) for the stress calculation", and a
+    multi-threaded run intermittently writes corrupted output. Measured:
 
-        threads=28 -> 1/30 runs corrupted
-        threads=8  -> 4/30 runs corrupted (peaks of 2.3e9 / 1.3e10 / 5.2e10 Pa
-                      against a true 2.92e8 — uninitialised-memory magnitudes)
-        threads=1  -> 0/30, bit-identical every time
+      * stress: peaks 15-80x too high (2.3e9 / 1.3e10 / 5.2e10 Pa vs a true
+        2.9e8). On one deck: threads=28 -> 1/30 runs bad, threads=8 -> 4/30 bad.
+      * displacement: also drifts — a 14-thread run of plate_with_hole gave
+        5.4064e-6 where both 1-thread ccx and Warp give 5.4189e-6.
+      * threads=1: 0/30, bit-identical every time.
 
-    Only ~1% of integration points are hit, so the corruption hides behind a
-    perfectly plausible-looking file: right row count, right displacements, and a
-    max von Mises that is silently 15-80x too high. For a Judge whose whole job is
-    a yield check, that is precisely the input that manufactures a false verdict.
+    The corruption hides behind a normal-looking .dat (right row count, plausible
+    magnitudes). For a Judge doing yield/stiffness checks that is exactly the
+    input that fabricates a verdict. There is no reason to ever run the oracle
+    multi-threaded — the values are what matter, so we take them from a single
+    deterministic run. `verify` re-runs once more (still single-threaded) and
+    requires agreement; single-thread ccx is deterministic, so this only ever
+    fires if something new breaks.
 
-    So: take the *values* from a single-threaded run (deterministic by
-    construction) and the *timing* from a full-core run (the honest CPU baseline).
-    `verify` keeps a cheap cross-check — SPOOLES is deterministic, so the two runs'
-    displacements must agree exactly; if they don't, something beyond this bug is
-    wrong and we refuse to arbitrate.
+    (`n_threads` is accepted for API compatibility but ignored for values.)
     """
-    if n_threads is None:
-        n_threads = pod_cpu_quota()
-
-    timed = run_ccx_oracle_once(job_noext, n_threads, expect_nodes, expect_ip)
     trusted = run_ccx_oracle_once(job_noext, 1, expect_nodes, expect_ip)
-
-    if verify and _rel(timed["max_displacement"], trusted["max_displacement"]) > 1e-9:
-        raise OracleUnstable(
-            f"{os.path.basename(job_noext)}: ccx displacements differ between a "
-            f"{n_threads}-thread and a 1-thread run "
-            f"({timed['max_displacement']:.8e} vs {trusted['max_displacement']:.8e}). "
-            f"The known stress race does not explain this; refusing to arbitrate."
-        )
-
-    out = dict(trusted)                      # values: single-threaded, trustworthy
-    out["wall_s"] = timed["wall_s"]          # timing: full-core baseline
-    out["cpu_avg"] = timed["cpu_avg"]
-    out["wall_s_1thread"] = trusted["wall_s"]
-    out["value_threads"] = 1
-    out["time_threads"] = n_threads
-    return out
+    if verify:
+        again = run_ccx_oracle_once(job_noext, 1, expect_nodes, expect_ip)
+        for key in ("max_displacement", "max_von_mises"):
+            if _rel(again[key], trusted[key]) > 1e-9:
+                raise OracleUnstable(
+                    f"{os.path.basename(job_noext)}: single-threaded ccx gave "
+                    f"{key}={trusted[key]:.8e} then {again[key]:.8e} on an identical "
+                    f"deck; refusing to arbitrate with an unstable oracle"
+                )
+    trusted["value_threads"] = 1
+    return trusted
 
 
 # --------------------------------------------------------------------------- #
