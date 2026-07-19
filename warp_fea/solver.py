@@ -57,6 +57,8 @@ from .elasticity import (
 )
 from .mesh_io import FEMesh, read_mesh, region_faces
 from .results import FEAResult, Location, Measurement, SolverStatus
+from .validation import (peek_mesh_cell_types, post_solve_linearity_check,
+                         rejected_result, validate_inputs)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -343,15 +345,52 @@ def solve_structural(
     degree: Optional[int] = None,
     want_fields: bool = True,
     verbose: bool = False,
+    validate: bool = True,
 ) -> FEAResult:
     """
     ★ Judge Stage 3a entry point: gmsh .msh (path or meshio.Mesh) + load_case -> FEAResult.
 
     Regions named in `load_case` are resolved through the mesh's gmsh physical groups.
+
+    With `validate=True` (default, PHASE4 §B) the input is gated first: out-of-scope
+    problems (non-tet elements, non-isotropic/non-linear material, unsupported or
+    unvalidated loads, contact, missing supports) are *refused* — a rejected
+    FEAResult (`rejected=True`, `reject_codes=[...]`, empty `measured`) is returned
+    instead of a plausible wrong number, and the reason is tallied for later
+    demand analysis. The load_case is parsed through `load_case_adapter` so the
+    solver never touches the raw external wire format.
     """
+    if validate:
+        cell_types = None if isinstance(mesh, FEMesh) else peek_mesh_cell_types(mesh)
+        vr, clc = validate_inputs(cell_types, load_case)
+        if not vr.ok:
+            return rejected_result(vr, backend="warp-gpu")
+        load_case = clc.to_solver_dict()        # canonical shape from the adapter
+        warn_codes = [c for c, _ in vr.warnings]
+        warn_msg = vr.warning_message()
+    else:
+        warn_codes, warn_msg = [], ""
+
     fe = mesh if isinstance(mesh, FEMesh) else read_mesh(mesh)
-    return _solve(fe, load_case, device=device, tol=tol, max_iters=max_iters,
-                  degree=degree, want_fields=want_fields, verbose=verbose)
+    result = _solve(fe, load_case, device=device, tol=tol, max_iters=max_iters,
+                    degree=degree, want_fields=want_fields, verbose=verbose)
+
+    # post-solve WARN: peak displacement large vs model size => linearity suspect
+    if validate and result.solver_status.converged and "max_displacement" in result.measured:
+        pts = fe.points
+        bbox_diag = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
+        lin = post_solve_linearity_check(
+            result.measured["max_displacement"].value, bbox_diag)
+        if lin is not None:
+            warn_codes = warn_codes + [lin[0]]
+            warn_msg = "; ".join(m for m in (warn_msg, f"[{lin[0]}] {lin[1]}") if m)
+
+    if validate:
+        result.warnings = warn_codes
+        if warn_msg:
+            result.solver_status.message = "; ".join(
+                m for m in (result.solver_status.message, "WARN: " + warn_msg) if m)
+    return result
 
 
 def solve_inp(

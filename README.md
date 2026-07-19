@@ -182,6 +182,38 @@ result reproduces. If you use ccx for anything trustworthy, run it with
 
 ---
 
+## Supported scope & input validation (Phase 4 §B)
+
+The solver guarantees exactly: **tetrahedral mesh · one isotropic linear-elastic
+material · linear static / modal / buckling**. Feeding it something outside that
+box and getting a plausible-looking number back is the worst Judge failure (a
+false pass), so `solve_structural` **gates the input first** and *refuses* rather
+than guesses:
+
+| Refused (returns `rejected=True`, empty `measured`, reason code) |
+|---|
+| non-tet elements — `hexahedron`, `wedge`, `pyramid`, shell `quad`, beam `line` |
+| non-isotropic / non-linear material — orthotropic, plastic, hyperelastic, … |
+| more than one material, or any contact / interaction defined |
+| unsupported **or unvalidated** load types — incl. `gravity` (implemented but never validated against ccx, so refused until a validation case promotes it) |
+| missing supports (singular stiffness), non-fixed support types |
+
+Soft issues **warn** instead of refusing (e.g. `nu ≥ 0.49` near-incompressible;
+post-solve `max|u|` large vs model size ⇒ linearity suspect). Every refusal is
+tallied by a stable **reason code**, persisted to `rejection_counts.json`, so you
+can later see *which* unsupported feature real traffic actually needed and how
+often:
+
+```python
+from warp_fea import counter_report
+counter_report()   # {'load_type:gravity_unvalidated': 12, 'element:hexahedron': 3, ...}
+```
+
+The external `load_case` schema is currently **estimated** (Stage 2's real schema
+is not yet in hand). All parsing is isolated in `load_case_adapter.py`; when the
+real schema arrives, only that one file changes. `python -m tests.test_input_validation`
+proves the gate (GPU-free).
+
 ## Layout
 
 ```
@@ -192,15 +224,24 @@ bench/          Phase 2: hex solver + CPU/GPU benchmark harness
   warp_solve.py     Warp GPU hex elasticity solver
   bench_driver.py   full sweep -> results.json, parity.csv, crossover.png
 warp_fea/       Phase 3: tet solver + Judge contract
-  solver.py         solve_structural(.msh, load_case) -> FEAResult  (main entry)
-  mesh_io.py        gmsh/.inp -> Tetmesh + region (physical-group) resolution
-  elasticity.py     bilinear form + von Mises recovery (at quadrature points)
-  modal.py          eigenfrequencies via GPU subspace iteration
-  buckling.py       linear buckling: geometric stiffness + subspace eigensolve
-  results.py        FEAResult / measured / solver_status (§1.2 schema)
-  validate.py       bake .inp, run ccx oracle, measured-parity comparison
-  cases.py          SI validation geometries (gmsh)
-  acceptance.py     the six PHASE3 §3 acceptance criteria, as one suite
+  solver.py            solve_structural(.msh, load_case) -> FEAResult  (main entry)
+  mesh_io.py           gmsh/.inp -> Tetmesh + region (physical-group) resolution
+  elasticity.py        bilinear form + von Mises recovery (at quadrature points)
+  modal.py             eigenfrequencies via GPU subspace iteration
+  buckling.py          linear buckling: geometric stiffness + subspace eigensolve
+  results.py           FEAResult / measured / solver_status (§1.2 schema)
+  validate.py          bake .inp, run ccx oracle, measured-parity comparison
+  cases.py             SI validation geometries (gmsh)
+  acceptance.py        the six PHASE3 §3 acceptance criteria, as one suite
+  load_case_adapter.py Phase 4: the ONE place that knows the external load_case
+                       wire format — the seam to re-map when Stage 2's real
+                       schema arrives (§A). Nothing else parses the raw dict.
+  validation.py        Phase 4 §B: pre-solve input gate — refuse out-of-scope
+                       inputs with a reason, tally each refusal by reason code
+                       (counter_report()); WARN (don't reject) on soft issues.
+  stress_basis_study.py Phase 4 §D: integration-point vs nodal-.frd von Mises
+                       quantified on plate_with_hole.
+tests/          test_input_validation.py  — §B acceptance (GPU-free, 15 checks)
 docs/           PHASE2_SPEC.md, PHASE3_SPEC.md (design specs)
 sample_results/ reference outputs (CSV / JSON / crossover.png)
 ```
@@ -212,6 +253,16 @@ sample_results/ reference outputs (CSV / JSON / crossover.png)
   nodes): element stresses are discontinuous and ccx extrapolates-then-averages, so
   comparing at quadrature points measures physics, not post-processing. `warp.fem`'s
   `RegularQuadrature(order=2)` gives 4 points/tet, matching ccx's C3D10 rule.
+- **Which von Mises the Judge consumes (Phase 4 §D).** `measured["max_von_mises_stress"]`
+  is the **integration-point** max — the basis validated element-for-element against
+  ccx (agrees to ~1e-7). Quantified on `plate_with_hole` (Kt≈3, run
+  `python -m warp_fea.stress_basis_study`): the Kt peak sits on the hole *surface*,
+  but quadrature points are element-*interior*, so the integration-point max is
+  **~4% below** ccx's surface-aware nodal `.frd` value (15.32 vs 15.97 MPa). This is a
+  **known, deliberate caveat**: for a yield check the integration-point basis is ~4%
+  non-conservative at stress concentrations. It was kept because it is the basis with
+  1e-7 ccx parity; ccx's nodal `.frd` value bounds the true surface peak from above if
+  a fully conservative check is ever required.
 - **Convergence is reported honestly:** `bsr_cg` stops at `err ≤ max(tol·‖b‖, tol)`;
   if it doesn't, `converged=False` and `measured` is emptied rather than returning a
   number the Judge might trust.

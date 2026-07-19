@@ -15,9 +15,13 @@ from .mesh_io import FEMesh, Region, read_mesh
 from .solver import solve_structural, solve_inp
 from .modal import solve_modal
 from .buckling import solve_buckling
+from .load_case_adapter import CanonicalLoadCase, parse_load_case
+from .validation import counter_report, validate_inputs
 
 __all__ = [
     "solve_structural", "solve_inp", "solve_modal", "solve_buckling",
     "FEAResult", "Measurement", "Location", "SolverStatus",
     "FEMesh", "Region", "read_mesh",
+    # PHASE4 §B input validation + §A adapter seam
+    "validate_inputs", "counter_report", "parse_load_case", "CanonicalLoadCase",
 ]

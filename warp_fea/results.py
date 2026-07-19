@@ -80,12 +80,21 @@ class FEAResult:
     measured: Dict[str, Any] = field(default_factory=dict)
     solver_status: SolverStatus = field(default_factory=SolverStatus)
     fields: Dict[str, Any] = field(default_factory=dict)
+    # PHASE4 §B: input-validation outcome. `rejected` means the input was out of
+    # solver scope and NOT solved; `reject_codes`/`warnings` carry the reason
+    # codes so the Judge can branch (a rejected result is not a failed solve).
+    rejected: bool = False
+    reject_codes: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
 
     def as_dict(self, include_fields: bool = True) -> dict:
         d: Dict[str, Any] = {
             "measured": {k: (v.as_dict() if isinstance(v, Measurement) else v)
                          for k, v in self.measured.items()},
             "solver_status": self.solver_status.as_dict(),
+            "rejected": self.rejected,
+            "reject_codes": list(self.reject_codes),
+            "warnings": list(self.warnings),
         }
         if include_fields:
             d["fields"] = {k: "<gpu-array>" for k in self.fields}
