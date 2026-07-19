@@ -1,0 +1,351 @@
+{
+  "summary": {
+    "req1_measured_parity": true,
+    "req2_si_units": true,
+    "req3_gpu_only_cpu20": true,
+    "req4_non_convergence": true,
+    "req5_contract_shape": true,
+    "req6_modal_m5": true
+  },
+  "parity": [
+    {
+      "case": "cantilever",
+      "order": 1,
+      "element": "C3D4",
+      "n_dof": 2217,
+      "n_elems": 2395,
+      "n_iters": 536,
+      "converged": true,
+      "warp_max_disp_m": 0.0016859307143961973,
+      "ccx_max_disp_m": 0.001685930749565284,
+      "rel_err_disp": 2.086033878854467e-08,
+      "warp_max_vm_Pa": 255255139.90330532,
+      "ccx_max_vm_Pa": 255255158.03491503,
+      "rel_err_vm": 7.103327449935655e-08,
+      "vm_region": null,
+      "vm_coords": [
+        0.010349,
+        0.004698,
+        0.019271
+      ],
+      "warp_wall_s": 0.02059834823012352,
+      "ccx_wall_s": 0.09315802343189716,
+      "speedup": 4.522596782574082,
+      "warp_cpu_pct": 5.9890625,
+      "warp_gpu_pct": 3.0,
+      "disp_pass": true,
+      "vm_pass": true,
+      "cpu_pass": true,
+      "pass": true
+    },
+    {
+      "case": "cantilever",
+      "order": 2,
+      "element": "C3D10",
+      "n_dof": 13452,
+      "n_elems": 2395,
+      "n_iters": 1488,
+      "converged": true,
+      "warp_max_disp_m": 0.002079279581517189,
+      "ccx_max_disp_m": 0.0020792795139713233,
+      "rel_err_disp": 3.248522632396756e-08,
+      "warp_max_vm_Pa": 292414593.7850822,
+      "ccx_max_vm_Pa": 292414626.90278757,
+      "rel_err_vm": 1.1325598071454783e-07,
+      "vm_region": null,
+      "vm_coords": [
+        0.00185,
+        0.019512,
+        0.019512
+      ],
+      "warp_wall_s": 0.10800180211663246,
+      "ccx_wall_s": 0.4502811785787344,
+      "speedup": 4.169200603638727,
+      "warp_cpu_pct": 5.80703125,
+      "warp_gpu_pct": 58.2,
+      "disp_pass": true,
+      "vm_pass": true,
+      "cpu_pass": true,
+      "pass": true
+    },
+    {
+      "case": "pressure_cylinder",
+      "order": 1,
+      "element": "C3D4",
+      "n_dof": 11979,
+      "n_elems": 17450,
+      "n_iters": 426,
+      "converged": true,
+      "warp_max_disp_m": 2.169097000898991e-07,
+      "ccx_max_disp_m": 2.1690972934951626e-07,
+      "rel_err_disp": 1.3489306010898812e-07,
+      "warp_max_vm_Pa": 2473709.8734005713,
+      "ccx_max_vm_Pa": 2473709.75183435,
+      "rel_err_vm": 4.9143284101066155e-08,
+      "vm_region": "bore",
+      "vm_coords": [
+        -0.019703,
+        -0.005742,
+        0.055896
+      ],
+      "warp_wall_s": 0.01772882416844368,
+      "ccx_wall_s": 0.43877813778817654,
+      "speedup": 24.749421259937655,
+      "warp_cpu_pct": 5.207812499999999,
+      "warp_gpu_pct": 0.0,
+      "disp_pass": true,
+      "vm_pass": true,
+      "cpu_pass": true,
+      "pass": true
+    },
+    {
+      "case": "pressure_cylinder",
+      "order": 2,
+      "element": "C3D10",
+      "n_dof": 83232,
+      "n_elems": 17450,
+      "n_iters": 1088,
+      "converged": true,
+      "warp_max_disp_m": 2.1992644422351646e-07,
+      "ccx_max_disp_m": 2.1992640841904274e-07,
+      "rel_err_disp": 1.6280206627242467e-07,
+      "warp_max_vm_Pa": 2982614.0327006956,
+      "ccx_max_vm_Pa": 2982614.0475793025,
+      "rel_err_vm": 4.988445253743917e-09,
+      "vm_region": "bore",
+      "vm_coords": [
+        0.017399,
+        -0.01045,
+        0.000365
+      ],
+      "warp_wall_s": 0.1412208303809166,
+      "ccx_wall_s": 3.776104159653187,
+      "speedup": 26.73900266318968,
+      "warp_cpu_pct": 6.193526785714285,
+      "warp_gpu_pct": 100.0,
+      "disp_pass": true,
+      "vm_pass": true,
+      "cpu_pass": true,
+      "pass": true
+    },
+    {
+      "case": "plate_with_hole",
+      "order": 1,
+      "element": "C3D4",
+      "n_dof": 35973,
+      "n_elems": 51223,
+      "n_iters": 2058,
+      "converged": true,
+      "warp_max_disp_m": 5.407637754015655e-06,
+      "ccx_max_disp_m": 5.407637679985175e-06,
+      "rel_err_disp": 1.3689985178602655e-08,
+      "warp_max_vm_Pa": 15925814.720397912,
+      "ccx_max_vm_Pa": 15925812.782033896,
+      "rel_err_vm": 1.2171209359429617e-07,
+      "vm_region": "hole_surface",
+      "vm_coords": [
+        0.10101,
+        0.039839,
+        0.001579
+      ],
+      "warp_wall_s": 0.07882878370583057,
+      "ccx_wall_s": 1.2305047418922186,
+      "speedup": 15.609840518206603,
+      "warp_cpu_pct": 5.940234374999999,
+      "warp_gpu_pct": 19.0,
+      "disp_pass": true,
+      "vm_pass": true,
+      "cpu_pass": true,
+      "pass": true
+    },
+    {
+      "case": "plate_with_hole",
+      "order": 2,
+      "element": "C3D10",
+      "n_dof": 247566,
+      "n_elems": 51223,
+      "n_iters": 5567,
+      "converged": true,
+      "warp_max_disp_m": 5.418885032629359e-06,
+      "ccx_max_disp_m": 5.418884747768584e-06,
+      "rel_err_disp": 5.256815529925245e-08,
+      "warp_max_vm_Pa": 15316737.64303734,
+      "ccx_max_vm_Pa": 15316734.38309146,
+      "rel_err_vm": 2.1283556907259325e-07,
+      "vm_region": "hole_surface",
+      "vm_coords": [
+        0.099664,
+        0.060155,
+        0.005872
+      ],
+      "warp_wall_s": 1.0073329210281372,
+      "ccx_wall_s": 12.772667432203889,
+      "speedup": 12.679688279389728,
+      "warp_cpu_pct": 6.150853924418604,
+      "warp_gpu_pct": 100.0,
+      "disp_pass": true,
+      "vm_pass": true,
+      "cpu_pass": true,
+      "pass": true
+    },
+    {
+      "case": "hccx_bracket",
+      "order": 1,
+      "element": "C3D4",
+      "n_dof": 3645,
+      "n_elems": 3876,
+      "n_iters": 365,
+      "converged": true,
+      "warp_max_disp_m": 4.937459229645885e-06,
+      "ccx_max_disp_m": 4.937458920094969e-06,
+      "rel_err_disp": 6.269437791557795e-08,
+      "warp_max_vm_Pa": 20226502.234465744,
+      "ccx_max_vm_Pa": 20226504.30944016,
+      "rel_err_vm": 1.0258690192910574e-07,
+      "vm_region": "payload_face",
+      "vm_coords": [
+        0.022482,
+        0.049629,
+        0.006894
+      ],
+      "warp_wall_s": 0.015429621562361717,
+      "ccx_wall_s": 0.12685691192746162,
+      "speedup": 8.221647654464212,
+      "warp_cpu_pct": 6.6390625,
+      "warp_gpu_pct": 0.0,
+      "disp_pass": true,
+      "vm_pass": true,
+      "cpu_pass": true,
+      "pass": true
+    },
+    {
+      "case": "hccx_bracket",
+      "order": 2,
+      "element": "C3D10",
+      "n_dof": 22119,
+      "n_elems": 3876,
+      "n_iters": 1045,
+      "converged": true,
+      "warp_max_disp_m": 8.127049504723075e-06,
+      "ccx_max_disp_m": 8.127049159481104e-06,
+      "rel_err_disp": 4.2480605710044577e-08,
+      "warp_max_vm_Pa": 31695079.538106643,
+      "ccx_max_vm_Pa": 31695078.527069308,
+      "rel_err_vm": 3.189887458194136e-08,
+      "vm_region": "mounting_holes",
+      "vm_coords": [
+        0.019504,
+        0.011207,
+        0.007698
+      ],
+      "warp_wall_s": 0.08216128125786781,
+      "ccx_wall_s": 0.6620677970349789,
+      "speedup": 8.058148399086448,
+      "warp_cpu_pct": 5.4681640625,
+      "warp_gpu_pct": 0.0,
+      "disp_pass": true,
+      "vm_pass": true,
+      "cpu_pass": true,
+      "pass": true
+    }
+  ],
+  "si": {
+    "criterion": "si_units",
+    "pass": true,
+    "err_scale_E_u": 0.0,
+    "err_scale_E_s": 0.0,
+    "err_scale_F_u": 0.0,
+    "err_scale_F_s": 0.0,
+    "u_m": 0.002079279581517189,
+    "sigma_Pa": 292414593.7850822
+  },
+  "non_convergence": {
+    "criterion": "non_convergence",
+    "pass": true,
+    "flagged": true,
+    "measured_withheld": true,
+    "healthy_ok": true
+  },
+  "modal": {
+    "criterion": "modal",
+    "pass": true,
+    "order": 2,
+    "max_rel_err": 1.1060752105109687e-05,
+    "warp_hz": [
+      398.05785737630777,
+      398.05836057827884,
+      2388.0192744769724,
+      2388.0354463919457,
+      3550.9651370610554,
+      6196.190258302459,
+      6290.465508241921,
+      6290.545423287699,
+      10652.792170803292,
+      11432.609319098561
+    ],
+    "ccx_hz": [
+      398.0579,
+      398.0584,
+      2388.02,
+      2388.036,
+      3550.968,
+      6196.19,
+      6290.478,
+      6290.558,
+      10652.91,
+      11432.69
+    ]
+  },
+  "contract_example": {
+    "measured": {
+      "max_displacement": {
+        "value": 8.127049504723075e-06,
+        "unit": "m",
+        "location": {
+          "coords": [
+            0.04935932745269121,
+            0.03142242474460329,
+            0.004
+          ],
+          "node_id": 6048,
+          "region": null
+        }
+      },
+      "max_von_mises_stress": {
+        "value": 31695079.538106643,
+        "unit": "Pa",
+        "location": {
+          "coords": [
+            0.019503904226584316,
+            0.011206831606587793,
+            0.007698322960135687
+          ],
+          "node_id": 4057,
+          "region": "mounting_holes"
+        }
+      }
+    },
+    "solver_status": {
+      "regime": "solid",
+      "backend": "warp-gpu",
+      "meshed": true,
+      "converged": true,
+      "n_dof": 22119,
+      "n_iters": 1045,
+      "wall_time_s": 0.08147808164358139,
+      "cpu_avg_pct": 4.7525390625,
+      "gpu_util_avg_pct": 41.5,
+      "device": "NVIDIA H200",
+      "residual": 8.970416399101405e-09,
+      "tol": 1e-10,
+      "element": "C3D10",
+      "message": ""
+    },
+    "fields": {
+      "displacement": "<gpu-array>",
+      "von_mises": "<gpu-array>",
+      "von_mises_points": "<gpu-array>",
+      "displacement_norm": "<gpu-array>"
+    }
+  }
+}

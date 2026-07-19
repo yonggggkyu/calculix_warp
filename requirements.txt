@@ -1,0 +1,11 @@
+# Python deps for the Warp GPU FEA solver + CalculiX validation harness.
+# Versions are those the results in sample_results/ were produced with; newer
+# patch releases are usually fine, but Warp's fem API does move between minors,
+# so warp-lang is pinned.
+warp-lang==1.15.0
+meshio==5.3.5
+gmsh>=4.11
+numpy>=1.24,<2.0        # warp 1.15 + this codebase were validated on numpy 1.26
+psutil>=5.9
+nvidia-ml-py>=12.0      # optional: GPU utilisation in the instrumentation harness
+matplotlib>=3.7         # only for bench/bench_driver.py crossover plot

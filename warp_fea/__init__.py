@@ -1,0 +1,21 @@
+"""
+warp_fea — GPU linear-static structural FEA on NVIDIA Warp, shaped to drop into
+the LLM Judge System's Stage 3a in place of the CalculiX runner.
+
+    from warp_fea import solve_structural
+    result = solve_structural("part.msh", load_case)
+    result.measured["max_von_mises_stress"].value    # Pa
+    result.solver_status.converged                   # never trust measured if False
+
+All inputs and outputs are SI (Pa, m, N). See PHASE3_SPEC.md for the contract.
+"""
+
+from .results import FEAResult, Location, Measurement, SolverStatus
+from .mesh_io import FEMesh, Region, read_mesh
+from .solver import solve_structural, solve_inp
+
+__all__ = [
+    "solve_structural", "solve_inp",
+    "FEAResult", "Measurement", "Location", "SolverStatus",
+    "FEMesh", "Region", "read_mesh",
+]

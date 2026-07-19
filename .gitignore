@@ -1,0 +1,36 @@
+# Warp JIT kernel cache (regenerated on first run)
+.warp_cache/
+WARP_CACHE/
+
+# Generated meshes and CalculiX decks/outputs (regenerate with the drivers)
+cases/
+fea_cases/
+*.msh
+*.inp
+*.dat
+*.frd
+*.sta
+*.cvg
+*.12d
+*.rout
+*.out
+
+# Run logs / freshly generated reports (canonical copies live in sample_results/)
+*.log
+/results.json
+/measured_parity.csv
+/parity.csv
+/crossover.png
+/acceptance.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
