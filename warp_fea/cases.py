@@ -259,11 +259,107 @@ def buckling_column(outdir: str = "fea_cases", order: int = 2, size: float = 0.0
     return path, load_case
 
 
+def self_weight(outdir: str = "fea_cases", order: int = 2, size: float = 0.006,
+                g: float = 9.81) -> Tuple[str, Dict]:
+    """
+    Cantilever under **self-weight only** — the standing validation case that
+    promotes the `gravity` load type into SUPPORTED_LOADS.
+
+    Reuses the cantilever geometry so ccx and Warp see the identical mesh; the
+    only difference from `cantilever` is the load (body force rho*g instead of a
+    tip force). Oracle: ccx `*DLOAD ... GRAV`.
+    """
+    path, lc = cantilever_beam(outdir=outdir, order=order, size=size)
+    lc = dict(lc)
+    lc["name"] = "cantilever_self_weight"
+    lc["loads"] = [{"type": "gravity", "vector": [0.0, 0.0, -g]}]
+    return path, lc
+
+
+# Orthotropic CFRP-like lamina (SI). Strongly directional so an axis mix-up
+# shows up immediately instead of hiding behind near-isotropy.
+CFRP_SI = {
+    "type": "orthotropic",
+    "E1": 135e9, "E2": 10e9, "E3": 10e9,
+    "nu12": 0.30, "nu13": 0.30, "nu23": 0.45,
+    "G12": 5.0e9, "G13": 5.0e9, "G23": 3.5e9,
+    "density": 1600.0,
+}
+
+
+def orthotropic_beam(outdir: str = "fea_cases", order: int = 2, size: float = 0.006
+                     ) -> Tuple[str, Dict]:
+    """
+    Cantilever with an **orthotropic** (CFRP-like) material — the standing case
+    that promotes orthotropic materials into scope. Same geometry/load as
+    `cantilever`, only the material changes, so any difference is constitutive.
+    Oracle: ccx `*ELASTIC, TYPE=ORTHO`.
+    """
+    path, lc = cantilever_beam(outdir=outdir, order=order, size=size)
+    lc = dict(lc)
+    lc["name"] = "cantilever_orthotropic"
+    lc["material"] = dict(CFRP_SI)
+    return path, lc
+
+
+def bimaterial_assembly(outdir: str = "fea_cases", order: int = 2, size: float = 0.007,
+                        L: float = 0.2, W: float = 0.02, H: float = 0.02,
+                        tip_force_N: float = -2000.0) -> Tuple[str, Dict]:
+    """
+    Two-part assembly: a steel half (x < L/2) fused to an aluminium half, meshed
+    **conformally so the interface nodes are shared** (gmsh fragment + a single
+    coherent mesh), clamped at x=0 and loaded at x=L.
+
+    Each half is its own volume physical group, so the load_case assigns a
+    material per region — the assembly path. Oracle: one ccx deck with two
+    `*MATERIAL` / `*SOLID SECTION, ELSET=...` pairs on the same nodes.
+    """
+    gmsh = _gmsh_begin("bimaterial")
+    a = gmsh.model.occ.addBox(0, 0, 0, L / 2, W, H)
+    b = gmsh.model.occ.addBox(L / 2, 0, 0, L / 2, W, H)
+    # fragment => the shared face is a single surface and the mesh is conformal
+    gmsh.model.occ.fragment([(3, a)], [(3, b)])
+    gmsh.model.occ.synchronize()
+
+    vols = gmsh.model.getEntities(3)
+    left_vol, right_vol = [], []
+    for (d, t) in vols:
+        com = gmsh.model.occ.getCenterOfMass(d, t)
+        (left_vol if com[0] < L / 2 else right_vol).append(t)
+    fixed, loaded = [], []
+    for (d, t) in gmsh.model.getEntities(2):
+        com = gmsh.model.occ.getCenterOfMass(d, t)
+        if abs(com[0]) < 1e-9:
+            fixed.append(t)
+        elif abs(com[0] - L) < 1e-9:
+            loaded.append(t)
+    gmsh.model.addPhysicalGroup(2, fixed, name="fixed_face")
+    gmsh.model.addPhysicalGroup(2, loaded, name="load_face")
+    gmsh.model.addPhysicalGroup(3, left_vol, name="part_steel")
+    gmsh.model.addPhysicalGroup(3, right_vol, name="part_alu")
+    path = _gmsh_finish(gmsh, os.path.join(outdir, f"bimat_o{order}.msh"), order, size)
+
+    load_case = {
+        "name": "bimaterial_assembly",
+        "materials": [
+            {"region": "part_steel", "E": 193e9, "nu": 0.29, "density": 7900.0},
+            {"region": "part_alu",   "E": 70e9,  "nu": 0.33, "density": 2700.0},
+        ],
+        "supports": [{"region": "fixed_face", "type": "fixed"}],
+        "loads": [{"region": "load_face", "type": "force",
+                   "vector": [0.0, 0.0, tip_force_N]}],
+    }
+    return path, load_case
+
+
 ALL_CASES = {
     "cantilever": cantilever_beam,
     "pressure_cylinder": pressure_cylinder,
     "plate_with_hole": plate_with_hole,
     "hccx_bracket": hccx_bracket,
+    "self_weight": self_weight,
+    "orthotropic_beam": orthotropic_beam,
+    "bimaterial_assembly": bimaterial_assembly,
 }
 
 

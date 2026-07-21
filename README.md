@@ -49,6 +49,9 @@ while CPU stays < 20%.
 | pressure cylinder | C3D10 | 83,232  | 1.6e-07 | 0.00% |
 | plate with hole   | C3D10 | 247,566 | 5.3e-08 | 0.00% |
 | bolted bracket    | C3D10 | 22,119  | 4.3e-08 | 0.00% |
+| self-weight (gravity)      | C3D10 | 13,452 | 7.6e-08 | 0.00% |
+| orthotropic (CFRP-like)    | C3D10 | 13,452 | 1.4e-07 | 0.00% |
+| two-material assembly      | C3D10 | 10,443 | 1.9e-07 | 0.00% |
 
 Modal (lowest 10 frequencies, C3D10) agrees with ccx `*FREQUENCY` to **1.1e-05**.
 Buckling (slender Euler column, lowest 4 factors, C3D10) agrees with ccx
@@ -125,8 +128,29 @@ result.solver_status.converged                    # never trust measured if this
 ```
 
 Supported loads: `force` (total N over a node set, ≙ `*CLOAD`), `pressure`
-(Pa on a face, ≙ `*DLOAD`), `traction` (Pa vector on a face), `gravity` (m/s²).
+(Pa on a face, ≙ `*DLOAD`), `traction` (Pa vector on a face), `gravity`/self-weight
+(m/s², needs `density`, ≙ `*DLOAD ... GRAV`).
 Supports: `fixed`. Regions are resolved through gmsh **physical groups**.
+
+**Orthotropic materials** — give the nine engineering constants instead of `E`/`nu`
+(≙ ccx `*ELASTIC, TYPE=ORTHO`):
+
+```python
+"material": {"type": "orthotropic",
+             "E1": 135e9, "E2": 10e9, "E3": 10e9,
+             "nu12": 0.30, "nu13": 0.30, "nu23": 0.45,
+             "G12": 5e9, "G13": 5e9, "G23": 3.5e9, "density": 1600.0}
+```
+
+**Assemblies** — one material per volume region, nodes shared at the interfaces
+(≙ several ccx `*SOLID SECTION, ELSET=...`). Use `materials` instead of `material`:
+
+```python
+"materials": [
+    {"region": "part_steel", "E": 193e9, "nu": 0.29, "density": 7900.0},
+    {"region": "part_alu",   "E": 70e9,  "nu": 0.33, "density": 2700.0},
+]
+```
 
 Modal and buckling analysis:
 
@@ -149,6 +173,36 @@ python -m bench.bench_driver --max-size 160x32x32   # ccx vs Warp, all sizes
 ```
 
 ---
+
+## Scope: what it solves, and what it refuses
+
+The solver guarantees **tetrahedral meshes · linear elasticity · linear static /
+modal / buckling**. Anything outside that is *refused*, not approximated — a
+rejected `FEAResult` carries `rejected=True` and stable `reject_codes`, and
+`measured` is left empty. Silently returning a plausible-looking number for an
+out-of-scope problem is the one failure mode a design Judge cannot tolerate.
+
+In scope (each validated against a matching ccx analysis):
+
+| feature | ccx equivalent |
+|---|---|
+| isotropic + **orthotropic** linear elasticity | `*ELASTIC`, `*ELASTIC, TYPE=ORTHO` |
+| force / pressure / traction / **gravity (self-weight)** | `*CLOAD`, `*DLOAD`, `*DLOAD ... GRAV` |
+| **assemblies**: material per region, shared interface nodes | several `*SOLID SECTION` |
+| static, modal, buckling | `*STATIC`, `*FREQUENCY`, `*BUCKLE` |
+
+Refused, with the reason code:
+
+| input | code | why |
+|---|---|---|
+| **contact / interactions** | `contact:defined` | nonlinear; needs an active-set/penalty iteration this linear solver does not have — **Phase 5** |
+| full anisotropy (21 constants), plasticity, hyperelasticity, creep | `material:anisotropic`, `material:plastic`, … | not implemented |
+| hex / shell / beam elements | `element:hexahedron`, … | tet-only |
+| tie constraints between non-conformal meshes | (assembly needs shared nodes) | not implemented |
+| unconstrained model, malformed loads/materials | `constraint:none`, `load_malformed:*`, `material:*` | would produce garbage |
+
+Every rejection is counted per reason in `rejection_counts.json`, so it is
+answerable which unsupported feature real traffic actually needed.
 
 ## ⚠️ Known issue: CalculiX 2.17 multi-threaded stress recovery is racy
 

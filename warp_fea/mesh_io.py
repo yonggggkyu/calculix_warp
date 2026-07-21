@@ -180,6 +180,29 @@ def read_mesh(mesh: Union[str, "meshio.Mesh"]) -> FEMesh:
                   vertex_ids=vertex_ids, corners_local=corners_local)
 
 
+def region_elements(fe: FEMesh, name: str) -> np.ndarray:
+    """
+    Element indices (rows of `fe.tets`) belonging to a **volume** region.
+
+    Assemblies assign a material per volume physical group, and warp.fem needs
+    cell indices to build the Subdomain. Regions store node tuples, not element
+    ids, so match on the corner-node set — that is independent of block ordering
+    and of how meshio split the cells.
+    """
+    r = fe.region(name)
+    if r.dim != 3:
+        raise ValueError(f"region {name!r} is dim={r.dim}, expected a volume (dim=3)")
+    lut = {frozenset(int(v) for v in tet): i for i, tet in enumerate(fe.corners)}
+    out = []
+    for cell in r.cells:
+        key = frozenset(int(v) for v in cell[:4])
+        idx = lut.get(key)
+        if idx is None:
+            raise RuntimeError(f"region {name!r} contains a cell that is not a mesh tet")
+        out.append(idx)
+    return np.asarray(sorted(set(out)), dtype=np.int64)
+
+
 def region_faces(fe: FEMesh, name: str) -> np.ndarray:
     """Corner triples (K,3) of a surface region — the geometric face definition."""
     r = fe.region(name)

@@ -52,10 +52,11 @@ from warp.fem.linalg import array_axpy
 from bench.instrument import measure, MeasureResult
 
 from .elasticity import (
-    body_force_form, disp_norm_kernel, elasticity_form, lame, position_at_qp,
-    pressure_form, traction_form, von_mises_at_qp,
+    body_force_form, disp_norm_kernel, elasticity_form, elasticity_form_ortho,
+    lame, material_model, material_parts, position_at_qp, pressure_form,
+    traction_form, von_mises_at_qp, von_mises_at_qp_ortho,
 )
-from .mesh_io import FEMesh, read_mesh, region_faces
+from .mesh_io import FEMesh, read_mesh, region_elements, region_faces
 from .results import FEAResult, Location, Measurement, SolverStatus
 from .validation import (peek_mesh_cell_types, post_solve_linearity_check,
                          rejected_result, validate_inputs)
@@ -160,10 +161,10 @@ def _solve(
     want_fields: bool = True,
     verbose: bool = False,
 ) -> FEAResult:
-    mat = load_case.get("material") or {}
-    if "E" not in mat or "nu" not in mat:
-        raise ValueError("load_case.material must provide SI 'E' [Pa] and 'nu'")
-    lam, mu = lame(float(mat["E"]), float(mat["nu"]))
+    # An assembly is `materials: [{region, E, nu, ...}, ...]`; a single part keeps
+    # using `material`. Both end up as a list of (region-or-None, kind, values) so
+    # assembly and single-part share one assembly loop.
+    parts = material_parts(load_case)
 
     degree = degree if degree is not None else fe.order
     if max_iters <= 0:
@@ -183,12 +184,29 @@ def _solve(
     test = fem.make_test(space=space, domain=domain)
     trial = fem.make_trial(space=space, domain=domain)
 
-    K = fem.integrate(
-        elasticity_form,
-        fields={"u": trial, "v": test},
-        values={"lam": wp.float64(lam), "mu": wp.float64(mu)},
-        output_dtype=wp.float64,
-    )
+    # ---- stiffness: one integration per material part, summed ----
+    K = None
+    part_domains = []          # (part, domain, test, trial) reused for stress/gravity
+    for part in parts:
+        if part.region is None:
+            dom_p, test_p, trial_p = domain, test, trial
+        else:
+            elems = region_elements(fe, part.region)
+            dom_p = fem.Subdomain(
+                domain,
+                element_indices=wp.array(elems.astype(np.int32), dtype=wp.int32,
+                                         device=device),
+            )
+            test_p = fem.make_test(space=space, domain=dom_p)
+            trial_p = fem.make_trial(space=space, domain=dom_p)
+        part_domains.append((part, dom_p, test_p, trial_p))
+        Ki = fem.integrate(
+            part.stiffness_form,
+            fields={"u": trial_p, "v": test_p},
+            values=part.values,
+            output_dtype=wp.float64,
+        )
+        K = Ki if K is None else K + Ki
 
     # ---- node correspondence (space <-> mesh) ----
     space_pos = space.node_positions().numpy()
@@ -226,14 +244,19 @@ def _solve(
                                     values={"t": wp.vec3d(*t)}, output_dtype=wp.vec3d)
             array_axpy(x=rhs, y=b, alpha=1.0, beta=1.0)
         elif ltype == "gravity":
-            rho = float(mat.get("density", 0.0))
-            if rho <= 0:
-                raise ValueError("gravity load needs material.density [kg/m^3]")
             g = np.asarray(load["vector"], dtype=np.float64)
-            rhs = fem.integrate(body_force_form, fields={"v": test},
-                                values={"f": wp.vec3d(*(rho * g))},
-                                output_dtype=wp.vec3d)
-            array_axpy(x=rhs, y=b, alpha=1.0, beta=1.0)
+            # body force is rho*g, and rho is per part: integrate each material
+            # region with its own density (a single part covers the whole model)
+            for part, dom_p, test_p, _ in part_domains:
+                rho = part.density or 0.0
+                if rho <= 0:
+                    raise ValueError(
+                        f"gravity load needs a positive density on material part "
+                        f"{part.region or '<single>'}")
+                rhs = fem.integrate(body_force_form, fields={"v": test_p},
+                                    values={"f": wp.vec3d(*(rho * g))},
+                                    output_dtype=wp.vec3d)
+                array_axpy(x=rhs, y=b, alpha=1.0, beta=1.0)
         else:
             raise ValueError(f"unsupported load type {ltype!r}")
 
@@ -290,13 +313,27 @@ def _solve(
     # ---- von Mises at quadrature points (spec §4.2) ----
     u_field = space.make_field()
     u_field.dof_values = x
-    quadrature = fem.RegularQuadrature(domain, order=2)   # 4 pts/tet == ccx C3D10
-    npts = quadrature.total_point_count()
-    vm = wp.zeros(npts, dtype=wp.float64, device=device)
-    qp_xyz = wp.zeros(npts, dtype=wp.vec3d, device=device)
-    fem.interpolate(von_mises_at_qp, dest=vm, at=quadrature, fields={"u": u_field},
-                    values={"lam": wp.float64(lam), "mu": wp.float64(mu)})
-    fem.interpolate(position_at_qp, dest=qp_xyz, at=quadrature)
+    # von Mises at quadrature points, per material part: the same strain gives a
+    # different stress under a different material, so each region must be
+    # evaluated with its own constitutive law and the results concatenated.
+    vm_parts, xyz_parts = [], []
+    for part, dom_p, _, _ in part_domains:
+        q_p = fem.RegularQuadrature(dom_p, order=2)    # 4 pts/tet == ccx C3D10
+        n_p = q_p.total_point_count()
+        vm_p = wp.zeros(n_p, dtype=wp.float64, device=device)
+        xyz_p = wp.zeros(n_p, dtype=wp.vec3d, device=device)
+        fem.interpolate(part.von_mises_form, dest=vm_p, at=q_p,
+                        fields={"u": u_field}, values=part.values)
+        fem.interpolate(position_at_qp, dest=xyz_p, at=q_p)
+        vm_parts.append(vm_p)
+        xyz_parts.append(xyz_p)
+    if len(vm_parts) == 1:
+        vm, qp_xyz = vm_parts[0], xyz_parts[0]
+    else:
+        vm = wp.array(np.concatenate([a.numpy() for a in vm_parts]),
+                      dtype=wp.float64, device=device)
+        qp_xyz = wp.array(np.concatenate([a.numpy() for a in xyz_parts]),
+                          dtype=wp.vec3d, device=device)
 
     unorm = wp.zeros(n_nodes, dtype=wp.float64, device=device)
     wp.launch(disp_norm_kernel, dim=n_nodes, inputs=[x, unorm], device=device)

@@ -37,10 +37,12 @@ from .results import FEAResult, SolverStatus
 # scope policy (single source of truth)
 # --------------------------------------------------------------------------- #
 # Load types validated element-for-element against ccx and therefore trusted.
-# gravity is IMPLEMENTED but was never validated against the oracle, so per the
-# §B honesty rule it is rejected until a validation case promotes it here.
-SUPPORTED_LOADS = frozenset({"force", "pressure", "traction"})
-IMPLEMENTED_BUT_UNVALIDATED = {"gravity": "load_type:gravity_unvalidated"}
+# A load type only moves in here once a standing validation case proves parity
+# with the oracle (see warp_fea/cases.py + acceptance).
+#   gravity: promoted — self-weight beam vs ccx *DLOAD GRAV agrees to 7.6e-8
+#            (displacement) / 4.6e-8 (von Mises); case `self_weight`.
+SUPPORTED_LOADS = frozenset({"force", "pressure", "traction", "gravity"})
+IMPLEMENTED_BUT_UNVALIDATED: Dict[str, str] = {}
 
 SUPPORTED_SUPPORTS = frozenset({"fixed", "encastre", "clamped"})
 
@@ -146,39 +148,107 @@ class ValidationResult:
 # --------------------------------------------------------------------------- #
 # checks
 # --------------------------------------------------------------------------- #
-def _check_material(clc: CanonicalLoadCase, vr: ValidationResult) -> None:
-    mat = clc.material
+def _orthotropic_defect(o: Dict[str, float]) -> Optional[str]:
+    """
+    None if the 9 constants describe an admissible orthotropic solid.
+
+    Positive moduli alone are not enough: Poisson ratios can be individually
+    plausible yet make the stiffness indefinite, which would produce a negative
+    strain energy and a happily-converging nonsense answer. So check that the
+    assembled normal-stiffness block is positive definite.
+    """
+    from .elasticity import ortho_constants
+    for k in ("E1", "E2", "E3", "G12", "G13", "G23"):
+        if o[k] <= 0:
+            return f"{k}={o[k]} must be > 0"
+    try:
+        Dn, _ = ortho_constants(o)
+    except np.linalg.LinAlgError:
+        return "orthotropic compliance matrix is singular"
+    w = float(np.min(np.linalg.eigvalsh(Dn)))
+    if w <= 0.0:
+        return (f"stiffness not positive-definite (min eigenvalue {w:.3e}); "
+                f"the Poisson ratios violate orthotropic admissibility")
+    return None
+
+
+def _check_one_material(mat, vr: ValidationResult, where: str = "") -> None:
+    """
+    Checks intrinsic to a single material definition. Runs once for a single-part
+    model and once per part for an assembly, so a bad material in part 3 is
+    reported as precisely as a bad material in a one-part model.
+    """
+    tag = f" ({where})" if where else ""
     for marker in mat.nonlinear_markers:
         vr.rejects.append((f"material:{marker}",
-                           f"material carries non-linear/anisotropic key {marker!r}; "
-                           f"solver is isotropic linear-elastic only"))
-    if not mat.isotropic_scalar:
+                           f"material{tag} carries non-linear/anisotropic key "
+                           f"{marker!r}; solver is linear-elastic only"))
+    if mat.is_orthotropic:
+        # 9-constant orthotropic is in scope (validated against ccx TYPE=ORTHO,
+        # case `orthotropic_beam`: 1.4e-7 displacement / 4.8e-8 von Mises).
+        if mat.ortho_missing:
+            vr.rejects.append(("material:orthotropic_incomplete",
+                               f"orthotropic material missing {mat.ortho_missing}; "
+                               f"all of E1,E2,E3,nu12,nu13,nu23,G12,G13,G23 required"))
+        else:
+            bad = _orthotropic_defect(mat.ortho)
+            if bad:
+                vr.rejects.append(("material:orthotropic_not_spd", bad))
+    elif not mat.isotropic_scalar:
         vr.rejects.append(("material:non_isotropic",
-                           "E/nu are array-like (orthotropic/anisotropic); "
-                           "only scalar isotropic E, nu supported"))
-    if clc.materials_count > 1:
-        vr.rejects.append(("material:multiple",
-                           f"{clc.materials_count} materials defined; single-material only"))
-    if clc.has_contact:
-        vr.rejects.append(("contact:defined",
-                           "contact/interaction defined; not supported"))
-    # malformed / missing elastic constants (only meaningful if not already rejected)
-    if mat.isotropic_scalar and not mat.nonlinear_markers:
+                           f"E/nu{tag} are array-like but no orthotropic constants "
+                           f"given; supply scalar isotropic E, nu or the 9 "
+                           f"orthotropic constants"))
+    if not mat.is_orthotropic and mat.isotropic_scalar and not mat.nonlinear_markers:
         if mat.E is None or mat.nu is None:
             vr.rejects.append(("material:missing_elastic_constants",
-                               "material must provide scalar SI E [Pa] and nu"))
+                               f"material{tag} must provide scalar SI E [Pa] and nu"))
         elif mat.E <= 0:
-            vr.rejects.append(("material:nonpositive_E", f"E={mat.E} must be > 0"))
+            vr.rejects.append(("material:nonpositive_E", f"E={mat.E}{tag} must be > 0"))
         elif not (-1.0 < mat.nu < 0.5):
             vr.rejects.append(("material:nu_out_of_range",
-                               f"nu={mat.nu} outside physical (-1, 0.5)"))
+                               f"nu={mat.nu}{tag} outside physical (-1, 0.5)"))
         elif mat.nu >= NU_NEARLY_INCOMPRESSIBLE:
             vr.warnings.append(("material:nearly_incompressible",
-                                f"nu={mat.nu} >= {NU_NEARLY_INCOMPRESSIBLE}: "
+                                f"nu={mat.nu}{tag} >= {NU_NEARLY_INCOMPRESSIBLE}: "
                                 f"near-incompressible, CG convergence may degrade"))
     if mat.extra_keys:
         vr.warnings.append(("material:unknown_keys",
-                            f"ignored unrecognised material keys {mat.extra_keys}"))
+                            f"ignored unrecognised material keys{tag} {mat.extra_keys}"))
+
+
+def _check_material(clc: CanonicalLoadCase, vr: ValidationResult) -> None:
+    if clc.material_parts:
+        # assembly: one material per volume region, nodes shared at interfaces
+        # (validated against a two-material ccx deck, case `bimaterial_assembly`:
+        #  1.9e-7 displacement / 4.1e-8 von Mises).
+        if clc.raw.get("material") is not None:
+            vr.rejects.append(("material:mixed_single_and_multi",
+                               "load_case defines both 'material' and 'materials'; "
+                               "use one or the other"))
+        seen = set()
+        for i, p in enumerate(clc.material_parts):
+            tag = p.region or f"<part {i}>"
+            if not p.region:
+                vr.rejects.append(("material:part_no_region",
+                                   f"materials[{i}] needs a volume 'region'"))
+            elif p.region in seen:
+                vr.rejects.append(("material:part_duplicate_region",
+                                   f"region {p.region!r} assigned more than once"))
+            seen.add(p.region)
+            _check_one_material(p.material, vr, where=tag)
+    elif clc.materials_count > 1:
+        vr.rejects.append(("material:multiple",
+                           f"{clc.materials_count} materials defined without regions; "
+                           f"an assembly must use 'materials': [{{region, ...}}]"))
+    else:
+        _check_one_material(clc.material, vr)
+
+    if clc.has_contact:
+        # nonlinear: needs an active-set/penalty iteration the linear solver does
+        # not have. Deliberately still out of scope (Phase 5).
+        vr.rejects.append(("contact:defined",
+                           "contact/interaction defined; not supported"))
 
 
 def _check_loads_supports(clc: CanonicalLoadCase, vr: ValidationResult) -> None:
@@ -196,6 +266,16 @@ def _check_loads_supports(clc: CanonicalLoadCase, vr: ValidationResult) -> None:
             if t in ("force", "pressure", "traction") and not ld.region:
                 vr.rejects.append((f"load_malformed:{t}",
                                    f"{t} load needs a 'region'"))
+            if t == "gravity":
+                # body force is rho*g: without a density this would silently
+                # assemble a zero load and "converge" to an all-zero answer.
+                if not ld.vector:
+                    vr.rejects.append(("load_malformed:gravity",
+                                       "gravity load needs a 'vector' [m/s^2]"))
+                if clc.material.density is None or clc.material.density <= 0:
+                    vr.rejects.append(("load_malformed:gravity_no_density",
+                                       "gravity load needs a positive "
+                                       "material.density [kg/m^3]"))
         elif t in IMPLEMENTED_BUT_UNVALIDATED:
             code = IMPLEMENTED_BUT_UNVALIDATED[t]
             vr.rejects.append((code,

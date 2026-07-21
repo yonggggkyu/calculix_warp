@@ -48,11 +48,15 @@ MAT_YIELD = "yield_strength"                # [Pa] (not used by the solver; kept
 MAT_NONLINEAR_MARKERS = (
     "plastic", "plasticity", "hardening", "stress_strain", "yield_curve",
     "hyperelastic", "ogden", "mooney_rivlin", "neo_hookean",
-    "orthotropic", "anisotropic", "elastic_matrix", "D_matrix", "Cij",
+    # full anisotropy (21 constants) is still out of scope — only the 9-constant
+    # orthotropic form below is implemented and validated against ccx TYPE=ORTHO.
+    "anisotropic", "elastic_matrix", "D_matrix", "Cij",
     "creep", "viscoelastic", "damage",
 )
+# Orthotropic engineering constants (validated: ccx *ELASTIC, TYPE=ORTHO).
+MAT_ORTHO_KEYS = ("E1", "E2", "E3", "nu12", "nu13", "nu23", "G12", "G13", "G23")
 # Material fields we understand and consume; everything else is "extra" (flagged).
-MAT_KNOWN_KEYS = (MAT_E, MAT_NU, MAT_DENSITY, MAT_YIELD)
+MAT_KNOWN_KEYS = (MAT_E, MAT_NU, MAT_DENSITY, MAT_YIELD, "type") + MAT_ORTHO_KEYS
 
 # Load/support fields
 LD_TYPE = "type"
@@ -74,7 +78,10 @@ class CanonicalMaterial:
     yield_strength: Optional[float]
     nonlinear_markers: List[str]            # out-of-scope material feature keys seen
     extra_keys: List[str]                   # unrecognised material keys (warn)
-    isotropic_scalar: bool                  # False if E/nu were array-like (orthotropic)
+    isotropic_scalar: bool                  # False if E/nu were array-like
+    is_orthotropic: bool = False            # 9-constant orthotropic (in scope)
+    ortho: Optional[Dict[str, float]] = None        # complete constants, if valid
+    ortho_missing: List[str] = field(default_factory=list)   # which ones are absent
 
 
 @dataclass
@@ -94,6 +101,14 @@ class CanonicalSupport:
 
 
 @dataclass
+class CanonicalMaterialPart:
+    """One entry of an assembly's `materials` list: a material plus its region."""
+    region: Optional[str]
+    material: CanonicalMaterial
+    raw: Dict[str, Any]
+
+
+@dataclass
 class CanonicalLoadCase:
     material: CanonicalMaterial
     supports: List[CanonicalSupport]
@@ -102,6 +117,7 @@ class CanonicalLoadCase:
     materials_count: int                    # distinct material definitions detected
     has_contact: bool
     unknown_top_level_keys: List[str]
+    material_parts: List[CanonicalMaterialPart] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)
 
     def to_solver_dict(self) -> dict:
@@ -111,6 +127,12 @@ class CanonicalLoadCase:
         solver never sees the raw external dict.
         """
         mat: Dict[str, Any] = {}
+        if self.material.is_orthotropic and self.material.ortho:
+            # carry the 9 constants through; the solver picks the orthotropic
+            # constitutive form off these (dropping them would silently downgrade
+            # an orthotropic part to isotropic, or fail as "missing E/nu")
+            mat["type"] = "orthotropic"
+            mat.update(self.material.ortho)
         if self.material.E is not None:
             mat["E"] = self.material.E
         if self.material.nu is not None:
@@ -119,6 +141,27 @@ class CanonicalLoadCase:
             mat["density"] = self.material.density
         if self.material.yield_strength is not None:
             mat["yield_strength"] = self.material.yield_strength
+        if self.material_parts:
+            # assembly: hand the solver one material spec per region
+            mats = []
+            for p in self.material_parts:
+                d: Dict[str, Any] = {"region": p.region}
+                if p.material.is_orthotropic and p.material.ortho:
+                    d["type"] = "orthotropic"
+                    d.update(p.material.ortho)
+                if p.material.E is not None:
+                    d["E"] = p.material.E
+                if p.material.nu is not None:
+                    d["nu"] = p.material.nu
+                if p.material.density is not None:
+                    d["density"] = p.material.density
+                mats.append(d)
+            return {
+                "name": self.name,
+                "materials": mats,
+                "supports": [{"region": s.region, "type": s.type} for s in self.supports],
+                "loads": [dict(l.raw) for l in self.loads],
+            }
         return {
             "name": self.name,
             "material": mat,
@@ -156,11 +199,24 @@ def _parse_material(raw: dict) -> CanonicalMaterial:
     E, nu = _as_float(E_raw), _as_float(nu_raw)
     # isotropic-scalar iff both E and nu are present as scalars
     iso = not (isinstance(E_raw, (list, tuple)) or isinstance(nu_raw, (list, tuple)))
+
+    # orthotropic: declared by type, or by carrying any of the 9 constants
+    declared = str(m.get("type", "")).lower() in ("orthotropic", "ortho")
+    present = [k for k in MAT_ORTHO_KEYS if k in m]
+    is_ortho = declared or bool(present)
+    ortho: Optional[Dict[str, float]] = None
+    ortho_missing: List[str] = []
+    if is_ortho:
+        ortho_missing = [k for k in MAT_ORTHO_KEYS if _as_float(m.get(k)) is None]
+        if not ortho_missing:
+            ortho = {k: float(_as_float(m[k])) for k in MAT_ORTHO_KEYS}
+
     return CanonicalMaterial(
         E=E, nu=nu,
         density=_as_float(m.get(MAT_DENSITY)),
         yield_strength=_as_float(m.get(MAT_YIELD)),
         nonlinear_markers=markers, extra_keys=extras, isotropic_scalar=iso,
+        is_orthotropic=is_ortho, ortho=ortho, ortho_missing=ortho_missing,
     )
 
 
@@ -219,6 +275,24 @@ def parse_load_case(raw: dict) -> CanonicalLoadCase:
     base_n = 1 if (raw.get(KEY_MATERIAL) is not None) else 0
     materials_count = max(base_n + plural_n, base_n, plural_n)
 
+    # An assembly assigns one material per volume region. Parse each entry with
+    # the same rules as the single material so orthotropy/markers are caught per
+    # part, and keep the region so the solver can build the sub-domains.
+    parts: List[CanonicalMaterialPart] = []
+    if isinstance(plural, (list, tuple)):
+        for spec in plural:
+            if not isinstance(spec, dict):
+                parts.append(CanonicalMaterialPart(
+                    region=None,
+                    material=CanonicalMaterial(None, None, None, None, [],
+                                               ["<material-entry-not-a-dict>"], False),
+                    raw={}))
+                continue
+            parts.append(CanonicalMaterialPart(
+                region=(str(spec["region"]) if spec.get("region") else None),
+                material=_parse_material({KEY_MATERIAL: spec}),
+                raw=dict(spec)))
+
     has_contact = bool(raw.get(KEY_CONTACT) or raw.get(KEY_INTERACTIONS)) or any(
         (isinstance(l, dict) and str(l.get(LD_TYPE, "")).lower() == "contact")
         for l in (raw.get(KEY_LOADS) or [])
@@ -231,6 +305,7 @@ def parse_load_case(raw: dict) -> CanonicalLoadCase:
         supports=_parse_supports(raw),
         loads=_parse_loads(raw),
         name=str(raw.get("name", "case")),
+        material_parts=parts,
         materials_count=materials_count,
         has_contact=has_contact,
         unknown_top_level_keys=unknown_top,

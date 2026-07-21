@@ -58,6 +58,29 @@ def pod_cpu_quota() -> int:
 # --------------------------------------------------------------------------- #
 # .inp baking
 # --------------------------------------------------------------------------- #
+def _elastic_cards(mat: dict) -> List[str]:
+    """
+    `*ELASTIC` card(s) for a material dict — isotropic or orthotropic.
+
+    For orthotropic we emit `TYPE=ORTHO` with the nine D components computed by
+    `elasticity.ortho_constants`, i.e. the *same* numbers the Warp form uses.
+    Converting engineering constants twice (once here, once in the solver) would
+    make a conversion bug look like a solver bug, so there is only one conversion.
+
+    ccx ORTHO order: D1111, D1122, D2222, D1133, D2233, D3333, D1212, D1313, D2323
+    """
+    from .elasticity import is_orthotropic, ortho_constants
+    if not is_orthotropic(mat):
+        return ["*ELASTIC", f"{float(mat['E']):.10e}, {float(mat['nu']):.6f}"]
+    Dn, Gs = ortho_constants(mat)
+    vals = [Dn[0, 0], Dn[0, 1], Dn[1, 1], Dn[0, 2], Dn[1, 2], Dn[2, 2],
+            Gs[0], Gs[1], Gs[2]]
+    # ccx wants the 9 constants then the temperature, max 8 per line
+    line1 = ", ".join(f"{v:.10e}" for v in vals[:8])
+    line2 = f"{vals[8]:.10e}, 0.0"
+    return ["*ELASTIC, TYPE=ORTHO", line1, line2]
+
+
 def bake_inp(fe: FEMesh, load_case: dict, path: str) -> str:
     """
     Write a CalculiX deck for exactly this (mesh, load_case).
@@ -67,7 +90,8 @@ def bake_inp(fe: FEMesh, load_case: dict, path: str) -> str:
     """
     etype = "C3D10" if fe.tet_type == "tetra10" else "C3D4"
     nn = 10 if etype == "C3D10" else 4
-    mat = load_case["material"]
+    # an assembly carries `materials` (per region) instead of a single `material`
+    mat = load_case.get("material") or {}
 
     L: List[str] = ["*HEADING", f" {load_case.get('name','case')} (SI: Pa, m, N)"]
 
@@ -92,11 +116,26 @@ def bake_inp(fe: FEMesh, load_case: dict, path: str) -> str:
     for rname in sorted(used_regions):
         nset(rname, fe.region(rname).node_idx)
 
-    L += ["*MATERIAL, NAME=MAT", "*ELASTIC",
-          f"{float(mat['E']):.10e}, {float(mat['nu']):.6f}"]
-    if mat.get("density"):
-        L += ["*DENSITY", f"{float(mat['density']):.6e}"]
-    L.append("*SOLID SECTION, ELSET=EALL, MATERIAL=MAT")
+    if load_case.get("materials"):
+        # assembly: one *MATERIAL + *SOLID SECTION per volume region, on the same
+        # nodes (shared-node assembly, no tie constraints)
+        from .mesh_io import region_elements
+        for i, spec in enumerate(load_case["materials"]):
+            name = f"MAT{i+1}"
+            eset = f"ES_{spec['region']}"
+            eids = np.asarray(sorted(int(e) + 1 for e in region_elements(fe, spec["region"])))
+            L.append(f"*ELSET, ELSET={eset}")
+            for k in range(0, len(eids), 8):
+                L.append(", ".join(str(v) for v in eids[k:k + 8]))
+            L += [f"*MATERIAL, NAME={name}"] + _elastic_cards(spec)
+            if spec.get("density"):
+                L += ["*DENSITY", f"{float(spec['density']):.6e}"]
+            L.append(f"*SOLID SECTION, ELSET={eset}, MATERIAL={name}")
+    else:
+        L += ["*MATERIAL, NAME=MAT"] + _elastic_cards(mat)
+        if mat.get("density"):
+            L += ["*DENSITY", f"{float(mat['density']):.6e}"]
+        L.append("*SOLID SECTION, ELSET=EALL, MATERIAL=MAT")
 
     L += ["*STEP", "*STATIC"]
 
